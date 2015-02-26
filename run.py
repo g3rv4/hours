@@ -3,52 +3,54 @@ import requests
 import redis
 import json
 import datetime
+import re
+import pytz
 from dateutil.parser import parse as date_parse
 from urllib import quote
-from flask import Flask, request, redirect
+from jira.client import JIRA
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+from urlparse import urlparse
 from config import config
 
-app = Flask(__name__)
 redis_cli = redis.StrictRedis(db=config['redis_db'])
+timedoctor_oauth_url = 'https://webapi.timedoctor.com/oauth/v2/auth?client_id=%s&response_type=code&redirect_uri=%s' \
+                       % (config['timedoctor']['client_id'], quote('http://example.com/auth'))
 
 
-def shutdown_server():
-    func = request.environ.get('werkzeug.server.shutdown')
-    if func is None:
-        raise RuntimeError('Not running with the Werkzeug Server')
-    func()
+def generate_timedoctor_token():
+    driver = webdriver.PhantomJS(executable_path=config['phantomjs_path'])
+    driver.get(timedoctor_oauth_url)
+    username_field = driver.find_element_by_id('username')
+    username_field.send_keys(config['timedoctor']['username'])
+    password_field = driver.find_element_by_id('password')
+    password_field.send_keys(config['timedoctor']['password'])
+    password_field.send_keys(Keys.ENTER)
 
-@app.route("/")
-def redirect_to_login():
-    return redirect('https://webapi.timedoctor.com/oauth/v2/auth?client_id=%s&response_type=code&redirect_uri=%s' %
-                    (config['timedoctor']['client_id'], quote('http://127.0.0.1:5000/auth')))
+    accept_button = driver.find_element_by_id('accepted')
+    accept_button.click()
 
-@app.route('/auth')
-def token():
-    code = request.args.get('code')
+    url = urlparse(driver.current_url)
+    query_dict = dict([tuple(x.split('=')) for x in url.query.split('&')])
+    code = query_dict['code']
+
     r = requests.post('https://webapi.timedoctor.com/oauth/v2/token', {
         'client_id': config['timedoctor']['client_id'],
         'client_secret': config['timedoctor']['client_secret'],
         'grant_type': 'authorization_code',
         'code': code,
-        'redirect_uri': 'http://127.0.0.1:5000/auth'
+        'redirect_uri': 'http://example.com/auth'
     })
 
     if r.status_code != 200:
-        return 'Error retrieving token'
+        print 'Unable to retrieve code, token service status code %i' % r.status_code
+        sys.exit(-1)
 
-    shutdown_server()
     data = json.loads(r.content)
 
     redis_cli.set('timedoctor:access_token', data['access_token'])
     redis_cli.set('timedoctor:refresh_token', data['refresh_token'])
 
-    return 'Done! go back to the console'
-
-
-def generate_timedoctor_token():
-    print 'Open http://127.0.0.1:5000 on your browser'
-    app.run()
     return redis_cli.get('timedoctor:access_token')
 
 
@@ -92,7 +94,49 @@ def update_jira(date):
         print 'Please specify a date'
         sys.exit(-1)
 
-    return get_worklogs(date, datetime.datetime.now().date())
+    jira_conf = config['jira']
+    jira = JIRA(jira_conf['server'], basic_auth=(jira_conf['username'], jira_conf['password']))
+    company_tz = pytz.timezone(config['timezone'])
+    worklogs = get_worklogs(date, datetime.datetime.now().date())
+    for date in worklogs:
+        for worklog in worklogs[date]:
+            # get the ticket id
+            current_best_position = len(worklog['task_name'])
+            current_match = None
+            for regexp in jira_conf['ticket_regexps']:
+                match = re.search('\\b(' + regexp + ')\\b', worklog['task_name'])
+                if match is not None and match.start(1) < current_best_position:
+                    current_best_position = match.start(1)
+                    current_match = match.group(1)
+
+            if current_match is not None:
+                try:
+                    issue = jira.issue(current_match)
+                except:
+                    pass
+                else:
+                    # found a ticket!
+                    description = worklog['task_name']
+                    if current_best_position == 0:
+                        description = re.sub('^[^a-zA-Z0-9\\(]*', '', worklog['task_name'][len(current_match):])
+
+                    worklog_ready = False
+                    for jworklog in jira.worklogs(issue.id):
+                        started = date_parse(jworklog.started).astimezone(config['timezone']).date()
+                        if date == started and jworklog.comment == description:
+                            if jworklog.timeSpentSeconds != int(worklog['length']):
+                                jworklog.update(timeSpentSeconds=int(worklog['length']))
+                            worklog_ready = True
+
+                    if not worklog_ready:
+                        # get the timezone suffix on the task's date (considering DST)
+                        task_date_with_time = datetime.datetime.combine(date, datetime.datetime.min.time())
+                        suffix = company_tz.localize(task_date_with_time).strftime('%z')
+
+                        # make it 6pm wherever they are
+                        dt = date_parse(date.strftime('%Y-%m-%dT18:00:00') + suffix)
+                        jira.add_worklog(issue.id, timeSpentSeconds=int(worklog['length']), started=dt,
+                                         comment=description)
 
 
 def timedoctor_request_with_token(method, url, **kwargs):
@@ -115,6 +159,24 @@ def timedoctor_request_with_token(method, url, **kwargs):
     return json.loads(response.content)
 
 
+def get_company_id():
+    if 'company_id' in config['timedoctor'] and config['timedoctor']['company_id']:
+        return config['timedoctor']['company_id']
+
+    company_id = redis_cli.get('timedoctor:company_id')
+    if company_id:
+        return int(company_id)
+
+    companies = get_companies()
+    if len(companies['accounts']) == 1:
+        redis_cli.set('timedoctor:company_id', companies['accounts'][0]['company_id'])
+        return companies['accounts'][0]['company_id']
+
+    print 'The user has %s companies, please set the company to use in the config file' % len(companies['accounts'])
+    sys.exit(-1)
+    len(companies)
+
+
 def get_worklogs(start_date, end_date):
     iter = start_date
     res = {}
@@ -124,13 +186,12 @@ def get_worklogs(start_date, end_date):
             'start_date': iter.strftime('%Y-%m-%d'),
             'end_date': iter.strftime('%Y-%m-%d')
         }
-        response = timedoctor_request_with_token('get', 'companies/%i/worklogs' % config['timedoctor']['company_id'],
+        response = timedoctor_request_with_token('get', 'companies/%i/worklogs' % get_company_id(),
                                                  params=params)
         if len(response['worklogs']['items']):
-            res[iter.strftime('%Y-%m-%d')] = response['worklogs']['items']
+            res[iter] = response['worklogs']['items']
 
         iter += datetime.timedelta(days=1)
-    print json.dumps(res, indent=True)
     return res
 
 

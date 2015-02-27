@@ -99,6 +99,9 @@ def update_jira(date):
     jira = JIRA(jira_conf['server'], basic_auth=(jira_conf['username'], jira_conf['password']))
     company_tz = pytz.timezone(config['timezone'])
     worklogs = get_worklogs(date, datetime.datetime.now().date())
+
+    user = jira.current_user()
+
     for date in worklogs:
         for worklog in worklogs[date]:
             # get the ticket id
@@ -126,10 +129,10 @@ def update_jira(date):
                         description = re.sub('^[^a-zA-Z0-9\\(]*', '', worklog['task_name'][len(current_match):])
 
                     worklog_ready = False
-                    for jworklog in jira.worklogs(issue.id):
+                    for jworklog in (w for w in jira.worklogs(issue.id) if w.author.name == user):
                         started = date_parse(jworklog.started).astimezone(company_tz).date()
                         if date == started and jworklog.comment == description:
-                            if jworklog.timeSpentSeconds != int(worklog['length']):
+                            if abs(jworklog.timeSpentSeconds - int(worklog['length'])) > 60:
                                 jworklog.update(timeSpentSeconds=int(worklog['length']))
                             worklog_ready = True
 

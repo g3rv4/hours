@@ -6,7 +6,11 @@ config = {
         'username': '',
         'password': '',
 
-        # Only required / used if you have multiple companies
+        # min task length in seconds
+        'min_task_length': 3 * 60,
+
+        # Required if you have multiple companies in your account
+        # If set, the system won't check your companies
         'company_id': 0
     },
     'jira': {
@@ -15,7 +19,8 @@ config = {
         'password': 'admin',
         'ticket_regexps': [
             'TEST-[0-9]+',
-            'DEV-[0-9]+'
+            'DEV-[0-9]+',
+            'SAL-[0-9]+'
         ]
     },
     'timezone': 'US/Pacific',

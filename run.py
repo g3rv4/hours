@@ -14,8 +14,9 @@ from urlparse import urlparse
 from config import config
 
 redis_cli = redis.StrictRedis(db=config['redis_db'])
+timedoctor_oauth_return_url = 'https://webapi.timedoctor.com/oauth/v2/token'
 timedoctor_oauth_url = 'https://webapi.timedoctor.com/oauth/v2/auth?client_id=%s&response_type=code&redirect_uri=%s' \
-                       % (config['timedoctor']['client_id'], quote('http://example.com/auth'))
+                       % (config['timedoctor']['client_id'], quote(timedoctor_oauth_return_url))
 
 
 def generate_timedoctor_token():
@@ -39,7 +40,7 @@ def generate_timedoctor_token():
         'client_secret': config['timedoctor']['client_secret'],
         'grant_type': 'authorization_code',
         'code': code,
-        'redirect_uri': 'http://example.com/auth'
+        'redirect_uri': timedoctor_oauth_return_url
     })
 
     if r.status_code != 200:
@@ -103,13 +104,17 @@ def update_jira(date):
             # get the ticket id
             current_best_position = len(worklog['task_name'])
             current_match = None
+            print 'Processing: %s' % worklog['task_name']
             for regexp in jira_conf['ticket_regexps']:
                 match = re.search('\\b(' + regexp + ')\\b', worklog['task_name'])
                 if match is not None and match.start(1) < current_best_position:
                     current_best_position = match.start(1)
                     current_match = match.group(1)
 
-            if current_match is not None:
+            if current_match is None:
+                print 'Match not found'
+            else:
+                print 'Found match %s' % current_match
                 try:
                     issue = jira.issue(current_match)
                 except:
@@ -122,7 +127,7 @@ def update_jira(date):
 
                     worklog_ready = False
                     for jworklog in jira.worklogs(issue.id):
-                        started = date_parse(jworklog.started).astimezone(config['timezone']).date()
+                        started = date_parse(jworklog.started).astimezone(company_tz).date()
                         if date == started and jworklog.comment == description:
                             if jworklog.timeSpentSeconds != int(worklog['length']):
                                 jworklog.update(timeSpentSeconds=int(worklog['length']))
@@ -174,12 +179,12 @@ def get_company_id():
 
     print 'The user has %s companies, please set the company to use in the config file' % len(companies['accounts'])
     sys.exit(-1)
-    len(companies)
 
 
 def get_worklogs(start_date, end_date):
     iter = start_date
     res = {}
+    min_task_length = max(config['timedoctor']['min_task_length'], 60)
     while iter <= end_date:
         print 'Getting worklog for %s' % iter.strftime('%Y-%m-%d')
         params = {
@@ -188,8 +193,10 @@ def get_worklogs(start_date, end_date):
         }
         response = timedoctor_request_with_token('get', 'companies/%i/worklogs' % get_company_id(),
                                                  params=params)
+
         if len(response['worklogs']['items']):
-            res[iter] = response['worklogs']['items']
+            # Only add those that have a duration longer than min_task_length
+            res[iter] = [i for i in response['worklogs']['items'] if int(i['length']) >= min_task_length]
 
         iter += datetime.timedelta(days=1)
     return res

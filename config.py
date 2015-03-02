@@ -14,14 +14,23 @@ config = {
         'company_id': 0
     },
     'jira': {
-        'server': 'http://localjira:2990/jira',
-        'username': 'admin',
-        'password': 'admin',
+        'server': '',
+        'username': '',
+        'password': '',
         'ticket_regexps': [
-            'TEST-[0-9]+',
             'DEV-[0-9]+',
-            'SAL-[0-9]+'
+            'SAL-[0-9]+',
+            'AT-[0-9]+',
         ]
+    },
+    'email': {
+        'aws': {
+            'access_key_id': '',
+            'secret_access_key': ''
+        },
+        'from': '',
+        'default_to': '',
+        'template': 'clean'
     },
     'timezone': 'US/Pacific',
 

@@ -12,6 +12,8 @@ from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from urlparse import urlparse
 from config import config
+from boto.ses import SESConnection
+from email_builder import build_email
 
 redis_cli = redis.StrictRedis(db=config['redis_db'])
 timedoctor_oauth_return_url = 'https://webapi.timedoctor.com/oauth/v2/token'
@@ -146,6 +148,29 @@ def update_jira(date):
                         jira.add_worklog(issue.id, timeSpentSeconds=int(worklog['length']), started=dt,
                                          comment=description)
 
+    redis_cli.set('jira:last_update', datetime.datetime.now().date().strftime('%Y-%m-%d'))
+
+
+def send_email(date_from, date_to, email=config['email']['default_to']):
+    worklogs = get_worklogs(date_from, date_to)
+
+    # put data into weeks
+    weeks = {}
+    for date in worklogs:
+        week = '%i-%02i' % (date.year, date.isocalendar()[1])
+        if week not in weeks:
+            weeks[week] = {}
+        weeks[week][date] = worklogs[date]
+
+    html = build_email(weeks, config['email']['template'])
+
+    connection = SESConnection(aws_access_key_id=config['email']['aws']['access_key_id'],
+                               aws_secret_access_key=config['email']['aws']['secret_access_key'])
+
+    subject = 'Hours report %s - %s' % (date_from.strftime('%m/%d'), date_to.strftime('%m/%d'))
+
+    connection.send_email(config['email']['from'], subject, html, email, format='html')
+
 
 def timedoctor_request_with_token(method, url, **kwargs):
     url = 'https://webapi.timedoctor.com/v1.1/' + url
@@ -189,7 +214,7 @@ def get_worklogs(start_date, end_date):
     res = {}
     min_task_length = max(config['timedoctor']['min_task_length'], 60)
     while iter <= end_date:
-        print 'Getting worklog for %s' % iter.strftime('%Y-%m-%d')
+        print 'Getting worklogs for %s' % iter.strftime('%Y-%m-%d')
         params = {
             'start_date': iter.strftime('%Y-%m-%d'),
             'end_date': iter.strftime('%Y-%m-%d')
@@ -219,6 +244,11 @@ def main(argv):
         if len(argv) >= 3:
             date = date_parse(argv[2]).date()
         update_jira(date)
+
+    elif argv[1] == 'send_email':
+        if len(argv) < 4:
+            print 'Usage: send_email <date1> <date2> [<email>]'
+        send_email(date_parse(argv[2]).date(), date_parse(argv[3]).date())
 
     elif argv[1] == 'get_companies':
         print get_companies()

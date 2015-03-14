@@ -5,11 +5,13 @@ import json
 import datetime
 import re
 import pytz
+import time
 from dateutil.parser import parse as date_parse
 from urllib import quote
 from jira.client import JIRA
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import NoSuchElementException
 from urlparse import urlparse
 from config import config
 from boto.ses import SESConnection
@@ -209,7 +211,7 @@ def get_company_id():
     sys.exit(-1)
 
 
-def get_worklogs(start_date, end_date):
+def get_worklogs_api(start_date, end_date):
     iter = start_date
     res = {}
     min_task_length = max(config['timedoctor']['min_task_length'], 60)
@@ -227,6 +229,57 @@ def get_worklogs(start_date, end_date):
             res[iter] = [i for i in response['worklogs']['items'] if int(i['length']) >= min_task_length]
 
         iter += datetime.timedelta(days=1)
+    return res
+
+
+def get_worklogs(start_date, end_date):
+    print 'Starting phantom'
+    driver = webdriver.PhantomJS(executable_path=config['phantomjs_path'])
+
+    print 'Opening login page'
+    driver.get('https://login.timedoctor.com/v2/login.php')
+
+    print 'Logging in'
+    username_field = driver.find_element_by_id('email')
+    username_field.send_keys(config['timedoctor']['username'])
+    password_field = driver.find_element_by_id('password')
+    password_field.send_keys(config['timedoctor']['password'])
+    password_field.send_keys(Keys.ENTER)
+
+    print 'Opening report page'
+    driver.get('https://login.timedoctor.com/v2/index.php?page=time_use_report')
+
+    min_task_length = max(config['timedoctor']['min_task_length'], 60)
+    res = {}
+    iter = start_date
+    while iter <= end_date:
+        print 'Getting worklogs for %s' % iter.strftime('%Y-%m-%d')
+        driver.execute_script("$('.date-val').html('%s')" % iter.strftime('%m/%d/%Y'))
+        driver.execute_script("daily_details_table();")
+        while True:
+            try:
+                time.sleep(0.2)
+                driver.find_element_by_class_name('tdLoadingOverlay')
+                print '    > Waiting for the loading to complete'
+            except NoSuchElementException:
+                break
+
+        for row in driver.find_elements_by_xpath('//tr[parent::tbody[@id="reports_data"]]'):
+            elements = row.find_elements_by_xpath('.//td')
+            print '  > %s - %s' % (elements[2].text, elements[0].text)
+            task_name = elements[0].text
+            task_time_parts = elements[2].text.split(':')
+            task_length = int(task_time_parts[0]) * 60 * 60 + int(task_time_parts[1]) * 60 + int(task_time_parts[2])
+            if task_length >= min_task_length:
+                if iter not in res:
+                    res[iter] = []
+                res[iter].append({
+                    'task_name': task_name,
+                    'length': task_length
+                })
+
+        iter += datetime.timedelta(days=1)
+
     return res
 
 

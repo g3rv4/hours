@@ -22,6 +22,9 @@ timedoctor_oauth_return_url = 'https://webapi.timedoctor.com/oauth/v2/token'
 timedoctor_oauth_url = 'https://webapi.timedoctor.com/oauth/v2/auth?client_id=%s&response_type=code&redirect_uri=%s' \
                        % (config['timedoctor']['client_id'], quote(timedoctor_oauth_return_url))
 
+jira_conf = config['jira']
+jira = JIRA(jira_conf['server'], basic_auth=(jira_conf['username'], jira_conf['password']))
+
 
 def generate_timedoctor_token():
     driver = webdriver.PhantomJS(executable_path=config['phantomjs_path'])
@@ -90,6 +93,33 @@ def refresh_timedoctor_token():
     return data['access_token']
 
 
+def get_jira_issue(task_description):
+    # get the ticket id
+    current_best_position = len(task_description)
+    current_match = None
+    print 'Retrieving issue for description: %s' % task_description
+    for regexp in jira_conf['ticket_regexps']:
+        match = re.search('\\b(' + regexp + ')\\b', task_description)
+        if match is not None and match.start(1) < current_best_position:
+            current_best_position = match.start(1)
+            current_match = match.group(1)
+
+    if current_match is None:
+        print 'Match not found'
+    else:
+        print 'Found match %s' % current_match
+        try:
+            description = task_description
+            if current_best_position == 0:
+                description = re.sub('^[^a-zA-Z0-9\\(]*', '', task_description[len(current_match):])
+
+            return jira.issue(current_match), description
+        except:
+            pass
+
+    return None, None
+
+
 def update_jira(date):
     if not date:
         last_update = redis_cli.get('jira:last_update')
@@ -99,8 +129,6 @@ def update_jira(date):
         print 'Please specify a date'
         sys.exit(-1)
 
-    jira_conf = config['jira']
-    jira = JIRA(jira_conf['server'], basic_auth=(jira_conf['username'], jira_conf['password']))
     company_tz = pytz.timezone(config['timezone'])
     worklogs = get_worklogs(date, datetime.datetime.now().date())
 
@@ -108,47 +136,26 @@ def update_jira(date):
 
     for date in worklogs:
         for worklog in worklogs[date]:
-            # get the ticket id
-            current_best_position = len(worklog['task_name'])
-            current_match = None
-            print 'Processing: %s' % worklog['task_name']
-            for regexp in jira_conf['ticket_regexps']:
-                match = re.search('\\b(' + regexp + ')\\b', worklog['task_name'])
-                if match is not None and match.start(1) < current_best_position:
-                    current_best_position = match.start(1)
-                    current_match = match.group(1)
+            issue, description = get_jira_issue(worklog['task_name'])
+            if issue:
+                # found a ticket!
+                worklog_ready = False
+                for jworklog in (w for w in jira.worklogs(issue.id) if w.author.name == user):
+                    started = date_parse(jworklog.started).astimezone(company_tz).date()
+                    if date == started and jworklog.comment == description:
+                        if abs(jworklog.timeSpentSeconds - int(worklog['length'])) > 60:
+                            jworklog.update(timeSpentSeconds=int(worklog['length']))
+                        worklog_ready = True
 
-            if current_match is None:
-                print 'Match not found'
-            else:
-                print 'Found match %s' % current_match
-                try:
-                    issue = jira.issue(current_match)
-                except:
-                    pass
-                else:
-                    # found a ticket!
-                    description = worklog['task_name']
-                    if current_best_position == 0:
-                        description = re.sub('^[^a-zA-Z0-9\\(]*', '', worklog['task_name'][len(current_match):])
+                if not worklog_ready:
+                    # get the timezone suffix on the task's date (considering DST)
+                    task_date_with_time = datetime.datetime.combine(date, datetime.datetime.min.time())
+                    suffix = company_tz.localize(task_date_with_time).strftime('%z')
 
-                    worklog_ready = False
-                    for jworklog in (w for w in jira.worklogs(issue.id) if w.author.name == user):
-                        started = date_parse(jworklog.started).astimezone(company_tz).date()
-                        if date == started and jworklog.comment == description:
-                            if abs(jworklog.timeSpentSeconds - int(worklog['length'])) > 60:
-                                jworklog.update(timeSpentSeconds=int(worklog['length']))
-                            worklog_ready = True
-
-                    if not worklog_ready:
-                        # get the timezone suffix on the task's date (considering DST)
-                        task_date_with_time = datetime.datetime.combine(date, datetime.datetime.min.time())
-                        suffix = company_tz.localize(task_date_with_time).strftime('%z')
-
-                        # make it 6pm wherever they are
-                        dt = date_parse(date.strftime('%Y-%m-%dT18:00:00') + suffix)
-                        jira.add_worklog(issue.id, timeSpentSeconds=int(worklog['length']), started=dt,
-                                         comment=description)
+                    # make it 6pm wherever they are
+                    dt = date_parse(date.strftime('%Y-%m-%dT18:00:00') + suffix)
+                    jira.add_worklog(issue.id, timeSpentSeconds=int(worklog['length']), started=dt,
+                                     comment=description)
 
     redis_cli.set('jira:last_update', datetime.datetime.now().date().strftime('%Y-%m-%d'))
 
@@ -159,6 +166,17 @@ def send_email(date_from, date_to, email=config['email']['default_to']):
     # put data into weeks
     weeks = {}
     for date in worklogs:
+        # add issue date
+        for worklog in worklogs[date]:
+            issue, description = get_jira_issue(worklog['task_name'])
+            if not issue:
+                worklog['issue'] = worklog['task_name']
+                worklog['comment'] = ''
+                continue
+
+            worklog['issue'] = '<a href="%s" target="_blank">%s: %s</a>' % (issue.permalink(), str(issue), issue.fields.summary)
+            worklog['comment'] = description
+
         week = '%i-%02i' % (date.year, date.isocalendar()[1])
         if week not in weeks:
             weeks[week] = {}
@@ -299,9 +317,23 @@ def main(argv):
         update_jira(date)
 
     elif argv[1] == 'send_email':
-        if len(argv) < 4:
-            print 'Usage: send_email <date1> <date2> [<email>]'
-        send_email(date_parse(argv[2]).date(), date_parse(argv[3]).date())
+        end_date = datetime.datetime.now().date()
+        email = config['email']['default_to']
+
+        start_date = end_date - datetime.timedelta(days=1)
+        while start_date.isoweekday() > 5:
+            start_date -= datetime.timedelta(days=1)
+
+        if len(argv) > 2:
+            start_date = date_parse(argv[2]).date()
+
+            if len(argv) > 3:
+                end_date = date_parse(argv[3]).date()
+
+                if len(argv) > 4:
+                    email = argv[3]
+
+        send_email(start_date, end_date, email)
 
     elif argv[1] == 'get_companies':
         print get_companies()

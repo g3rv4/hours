@@ -12,32 +12,34 @@ def build_email(weeks, template, **tpl_args):
         week_lines = []
         weekly_total = 0
         ordered_days = sorted(weeks[week].keys())
-        week_lines.append('<tr><th colspan="4">&nbsp;<br/>Week %s<br/>&nbsp;</th></tr>' % week)
-        week_lines.append('<tr><th>Day</th><th>Daily Total</th><th>Task length</th><th>Task</th></tr>')
+        week_lines.append('<tr><th colspan="5">&nbsp;<br/>Week %s<br/>&nbsp;</th></tr>' % week)
+        week_lines.append('<tr><th>Day</th><th>Daily Total</th><th>Task length</th><th>Task</th><th>Comment</th></tr>')
         for day in ordered_days:
             bg = 'style="background-color:%s"' % colors[iter % len(colors)]
             tasks = weeks[week][day]
             daily_total = sum([int(t['length']) for t in tasks])
             weekly_total += daily_total
             week_lines.append(('<tr {bg}><td rowspan="{rowspan}">{day}</td><td rowspan="{rowspan}">{daily_total}</td>'
-                                '<td>{task_duration}</td><td>{task}</td></tr>').
+                                '<td>{task_duration}</td><td>{task}</td><td>{comment}&nbsp;</td></tr>').
                                format(rowspan=len(tasks),
                                       day=day.strftime('%m/%d<br/>%A'),
                                       daily_total=secondsToTime(daily_total, True),
-                                      task=tasks[0]['task_name'],
+                                      task=tasks[0]['issue'],
                                       task_duration=secondsToTime(tasks[0]['length']),
-                                      bg=bg))
+                                      bg=bg,
+                                      comment=tasks[0]['comment']))
             for task in tasks[1:]:
-                week_lines.append('<tr %s><td>%s</td><td>%s</td></tr>' % (bg, secondsToTime(task['length']), task['task_name']))
+                week_lines.append('<tr %s><td>%s</td><td>%s</td><td>%s</td></tr>' % (bg, secondsToTime(task['length']),
+                                                                                     task['issue'], task['comment']))
 
             iter += 1
 
-        week_lines.append('<tr><td colspan="4" style="text-align:center;">&nbsp;<br/><b>Weekly total:</b> %s<br/>&nbsp;</td></tr>' %
+        week_lines.append('<tr><td colspan="5" style="text-align:center;">&nbsp;<br/><b>Weekly total:</b> %s<br/>&nbsp;</td></tr>' %
                            secondsToTime(weekly_total, True))
         weeks_lines.append('\n'.join(week_lines))
         period_total += weekly_total
 
-    weeks_html = '<table style="border-collapse: collapse;" border="1">%s</table>' % '<tr><td colspan="4">&nbsp;</td></tr>'.join(weeks_lines)
+    weeks_html = '<table style="border-collapse: collapse;" border="1">%s</table>' % '<tr><td colspan="5">&nbsp;</td></tr>'.join(weeks_lines)
     if len(weeks) > 1:
         weeks_html += '<br/>&nbsp;<br/><b>Period total:</b> %s' % secondsToTime(period_total, True)
 

@@ -39,6 +39,7 @@ def generate_timedoctor_token():
     accept_button.click()
 
     url = urlparse(driver.current_url)
+    driver.close()
     query_dict = dict([tuple(x.split('=')) for x in url.query.split('&')])
     code = query_dict['code']
 
@@ -234,6 +235,10 @@ def get_company_id():
     sys.exit(-1)
 
 
+def get_worklogs(start_date, end_date):
+    return globals()['get_worklogs_%s' % config['timedoctor']['method']](start_date, end_date)
+
+
 def get_worklogs_api(start_date, end_date):
     iter = start_date
     res = {}
@@ -261,7 +266,7 @@ def get_selenium_driver():
     return klass(executable_path=browser_config['executable_path'])
 
 
-def get_worklogs(start_date, end_date):
+def get_worklogs_selenium(start_date, end_date):
     print 'Starting browser'
     driver = get_selenium_driver()
 
@@ -309,6 +314,7 @@ def get_worklogs(start_date, end_date):
 
         iter += datetime.timedelta(days=1)
 
+    driver.close()
     return res
 
 

@@ -1,6 +1,10 @@
 config = {
     'redis_db': 0,
     'timedoctor': {
+        # valid values are 'api' and 'selenium'. If 'api' is selected, the client_id and client_secret
+        # are required in addition to the username and password
+        'method': 'selenium',
+
         'client_id': '',
         'client_secret': '',
         'username': '',

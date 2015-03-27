@@ -27,7 +27,7 @@ jira = JIRA(jira_conf['server'], basic_auth=(jira_conf['username'], jira_conf['p
 
 
 def generate_timedoctor_token():
-    driver = webdriver.PhantomJS(executable_path=config['phantomjs_path'])
+    driver = get_selenium_driver()
     driver.get(timedoctor_oauth_url)
     username_field = driver.find_element_by_id('username')
     username_field.send_keys(config['timedoctor']['username'])
@@ -120,7 +120,7 @@ def get_jira_issue(task_description):
     return None, None
 
 
-def update_jira(date):
+def update_jira(date, worklogs=None):
     if not date:
         last_update = redis_cli.get('jira:last_update')
         if last_update:
@@ -130,7 +130,7 @@ def update_jira(date):
         sys.exit(-1)
 
     company_tz = pytz.timezone(config['timezone'])
-    worklogs = get_worklogs(date, datetime.datetime.now().date())
+    worklogs = worklogs or get_worklogs(date, datetime.datetime.now().date())
 
     user = jira.current_user()
 
@@ -144,7 +144,10 @@ def update_jira(date):
                     started = date_parse(jworklog.started).astimezone(company_tz).date()
                     if date == started and jworklog.comment == description:
                         if abs(jworklog.timeSpentSeconds - int(worklog['length'])) > 60:
-                            jworklog.update(timeSpentSeconds=int(worklog['length']))
+                            original_td = datetime.timedelta(seconds=jworklog.timeSpentSeconds)
+                            new_td = datetime.timedelta(seconds=int(worklog['length']))
+                            print '  Updating worklog for ticket %s from %s to %s' % (issue.key, original_td, new_td)
+                            jworklog.update(timeSpentSeconds=new_td.seconds)
                         worklog_ready = True
 
                 if not worklog_ready:
@@ -154,14 +157,16 @@ def update_jira(date):
 
                     # make it 6pm wherever they are
                     dt = date_parse(date.strftime('%Y-%m-%dT18:00:00') + suffix)
-                    jira.add_worklog(issue.id, timeSpentSeconds=int(worklog['length']), started=dt,
+                    td = datetime.timedelta(seconds=int(worklog['length']))
+                    print '  Adding worklog for ticket %s for %s' % (issue.key, td)
+                    jira.add_worklog(issue.id, timeSpentSeconds=td.seconds, started=dt,
                                      comment=description)
 
     redis_cli.set('jira:last_update', datetime.datetime.now().date().strftime('%Y-%m-%d'))
 
 
-def send_email(date_from, date_to, email=config['email']['default_to']):
-    worklogs = get_worklogs(date_from, date_to)
+def send_email(date_from, date_to, email=config['email']['default_to'], worklogs=None):
+    worklogs = worklogs or get_worklogs(date_from, date_to)
 
     # put data into weeks
     weeks = {}
@@ -250,9 +255,15 @@ def get_worklogs_api(start_date, end_date):
     return res
 
 
+def get_selenium_driver():
+    browser_config = config['selenium']['browsers'][config['selenium']['browser']]
+    klass = getattr(globals()['webdriver'], browser_config['driver_class'])
+    return klass(executable_path=browser_config['executable_path'])
+
+
 def get_worklogs(start_date, end_date):
-    print 'Starting phantom'
-    driver = webdriver.PhantomJS(executable_path=config['phantomjs_path'])
+    print 'Starting browser'
+    driver = get_selenium_driver()
 
     print 'Opening login page'
     driver.get('https://login.timedoctor.com/v2/login.php')

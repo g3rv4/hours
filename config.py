@@ -21,6 +21,7 @@ config = {
             'DEV-[0-9]+',
             'SAL-[0-9]+',
             'AT-[0-9]+',
+            'EV-[0-9]+'
         ]
     },
     'email': {
@@ -35,5 +36,17 @@ config = {
     'timezone': 'US/Pacific',
 
     # Only required if the username in the timedoctor section is set
-    'phantomjs_path': '/usr/local/bin/phantomjs'
+    'selenium': {
+        'browser': 'phantomjs',
+        'browsers': {
+            'phantomjs': {
+                'driver_class': 'PhantomJS',
+                'executable_path': '/usr/local/bin/phantomjs'
+            },
+            'chrome': {
+                'driver_class': 'Chrome',
+                'executable_path': '/Users/gervasio/chromedriver'
+            }
+        }
+    }
 }

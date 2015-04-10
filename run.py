@@ -283,6 +283,10 @@ def get_worklogs_selenium(start_date, end_date):
     print 'Opening report page'
     driver.get('https://login.timedoctor.com/v2/index.php?page=time_use_report')
 
+    print 'Clicking on the daily button'
+    day_button_field = driver.find_element_by_id('dayBtn')
+    day_button_field.click()
+
     min_task_length = max(config['timedoctor']['min_task_length'], 60)
     res = {}
     iter = start_date

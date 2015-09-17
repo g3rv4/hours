@@ -7,7 +7,7 @@ def build_email(weeks, template, **tpl_args):
     weeks_lines = []
     period_total = 0
     colors = ('#F0F0F0', '#FFFFFF')
-    for week in weeks:
+    for week in sorted(weeks.keys()):
         iter = 0
         week_lines = []
         weekly_total = 0

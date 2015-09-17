@@ -280,6 +280,13 @@ def get_worklogs_selenium(start_date, end_date):
     password_field.send_keys(config['timedoctor']['password'])
     password_field.send_keys(Keys.ENTER)
 
+    while True:
+        try:
+            driver.find_element_by_id('nav-menu')
+            break
+        except:
+            time.sleep(0.2)
+
     print 'Opening report page'
     driver.get('https://login.timedoctor.com/v2/index.php?page=time_use_report')
 
